@@ -44,4 +44,4 @@ strsim = "0.11"
 ringbuf = "0.4"
 
 # Resampling
-rubato = "0.16"
+rubato = "1.0"
