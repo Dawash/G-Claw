@@ -107,7 +107,7 @@ pub struct ToolResult {
     pub success: bool,
     pub duration_ms: u64,
     pub cache_hit: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
 
