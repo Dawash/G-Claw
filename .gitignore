@@ -1,0 +1,12 @@
+/target
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Model files (large binaries — download separately)
+models/
+*.onnx
+*.bin
+!Cargo.toml

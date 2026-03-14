@@ -1,0 +1,47 @@
+[package]
+name = "gclaw-voice"
+version.workspace = true
+edition.workspace = true
+
+[features]
+default = []
+# Enable full native pipeline (requires LLVM/libclang for whisper-rs bindgen)
+full = ["whisper-rs", "ort", "ndarray"]
+
+# Binary only builds with "full" feature
+[[bin]]
+name = "gclaw-voice"
+path = "src/main.rs"
+required-features = ["full"]
+
+[dependencies]
+gclaw-ipc = { workspace = true }
+gclaw-config = { path = "../gclaw-config" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+# Audio I/O
+cpal = "0.15"
+
+# VAD (Silero via ONNX Runtime) — requires "full" feature
+ort = { version = "2.0.0-rc.12", features = ["load-dynamic"], optional = true }
+ndarray = { version = "0.16", optional = true }
+
+# STT (whisper.cpp bindings) — requires "full" feature + LLVM/libclang
+whisper-rs = { version = "0.13", optional = true }
+
+# TTS — shelled out to piper/espeak-ng binaries (no native deps)
+
+# Wake word fuzzy matching
+strsim = "0.11"
+
+# Ring buffer for audio frames
+ringbuf = "0.4"
+
+# Resampling
+rubato = "0.16"

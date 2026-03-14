@@ -1,0 +1,44 @@
+[workspace]
+members = [
+    "crates/gclaw-ipc",
+    "crates/gclaw-config",
+    "crates/gclaw-voice",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/user/gclaw"
+
+[workspace.dependencies]
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rmp-serde = "1"
+
+# Async
+tokio = { version = "1", features = ["full"] }
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Error handling
+anyhow = "1"
+thiserror = "2"
+
+# Crypto (for config Fernet decryption — pure Rust, no OpenSSL)
+sha2 = "0.10"
+base64 = "0.22"
+hmac = "0.12"
+aes = "0.8"
+cbc = { version = "0.1", features = ["alloc"] }
+
+# IPC
+bytes = "1"
+
+# Cross-crate
+gclaw-ipc = { path = "crates/gclaw-ipc" }
+gclaw-config = { path = "crates/gclaw-config" }
