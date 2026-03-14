@@ -98,17 +98,56 @@ impl TtsEngine for EspeakTts {
             bail!("espeak-ng exited with status {}", output.status);
         }
 
-        // espeak --stdout outputs a WAV file. Skip the 44-byte WAV header.
+        // espeak --stdout outputs a WAV file. Parse RIFF chunks properly
+        // instead of assuming a fixed 44-byte header (extended headers exist).
         let wav_data = &output.stdout;
-        if wav_data.len() < 44 {
+        if wav_data.len() < 12 {
             bail!("espeak output too short ({} bytes)", wav_data.len());
         }
 
-        // Parse sample rate from WAV header (bytes 24-27, little-endian u32).
-        let sample_rate = u32::from_le_bytes([wav_data[24], wav_data[25], wav_data[26], wav_data[27]]);
-        let bits_per_sample = u16::from_le_bytes([wav_data[34], wav_data[35]]);
+        // Verify RIFF header.
+        if &wav_data[0..4] != b"RIFF" || &wav_data[8..12] != b"WAVE" {
+            bail!("espeak output is not a valid WAV file");
+        }
 
-        let pcm_data = &wav_data[44..];
+        // Walk RIFF chunks to find "fmt " and "data".
+        let mut sample_rate: u32 = ESPEAK_SAMPLE_RATE;
+        let mut bits_per_sample: u16 = 16;
+        let mut data_start: usize = 0;
+        let mut data_len: usize = 0;
+
+        let mut pos: usize = 12; // After "RIFF" + size + "WAVE"
+        while pos + 8 <= wav_data.len() {
+            let chunk_id = &wav_data[pos..pos + 4];
+            let chunk_size = u32::from_le_bytes([
+                wav_data[pos + 4], wav_data[pos + 5],
+                wav_data[pos + 6], wav_data[pos + 7],
+            ]) as usize;
+
+            if chunk_id == b"fmt " && pos + 8 + chunk_size <= wav_data.len() {
+                let fmt = &wav_data[pos + 8..pos + 8 + chunk_size];
+                if fmt.len() >= 16 {
+                    sample_rate = u32::from_le_bytes([fmt[4], fmt[5], fmt[6], fmt[7]]);
+                    bits_per_sample = u16::from_le_bytes([fmt[14], fmt[15]]);
+                }
+            } else if chunk_id == b"data" {
+                data_start = pos + 8;
+                data_len = chunk_size.min(wav_data.len() - data_start);
+                break;
+            }
+
+            // Advance to next chunk (chunks are 2-byte aligned).
+            pos += 8 + chunk_size;
+            if chunk_size % 2 != 0 {
+                pos += 1;
+            }
+        }
+
+        if data_start == 0 || data_len == 0 {
+            bail!("no 'data' chunk found in WAV output");
+        }
+
+        let pcm_data = &wav_data[data_start..data_start + data_len];
         let samples: Vec<f32> = match bits_per_sample {
             16 => pcm_data
                 .chunks_exact(2)

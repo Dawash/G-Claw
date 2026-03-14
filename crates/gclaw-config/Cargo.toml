@@ -14,5 +14,6 @@ base64 = { workspace = true }
 hmac = { workspace = true }
 aes = { workspace = true }
 cbc = { workspace = true }
+getrandom = "0.3"
 hostname = "0.4"
 whoami = "1"

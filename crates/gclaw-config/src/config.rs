@@ -134,9 +134,11 @@ fn derive_key() -> Result<[u8; 32]> {
 ///   Version (1) | Timestamp (8) | IV (16) | Ciphertext (variable, multiple of 16) | HMAC (32)
 pub fn decrypt_value(token: &str) -> Result<String> {
     let raw_key = derive_key()?;
-    // Fernet key: first 16 bytes = signing key, last 16 bytes = encryption key
-    let signing_key = &raw_key[..16];
-    let encryption_key = &raw_key[16..32];
+    // Fernet spec: first 16 bytes = signing key, last 16 bytes = encryption key.
+    // Python's cryptography.fernet uses the FULL 32 bytes for HMAC-SHA256 signing,
+    // and the LAST 16 bytes for AES-128 encryption.
+    let signing_key = &raw_key[..]; // Full 32 bytes for HMAC (matches Python)
+    let encryption_key = &raw_key[16..32]; // Last 16 bytes for AES
 
     // Decode the token (base64url, may or may not have padding).
     let token_bytes = URL_SAFE
@@ -179,17 +181,17 @@ pub fn decrypt_value(token: &str) -> Result<String> {
 /// Encrypt a plaintext value into a Fernet token (pure Rust implementation).
 pub fn encrypt_value(plaintext: &str) -> Result<String> {
     let raw_key = derive_key()?;
-    let signing_key = &raw_key[..16];
-    let encryption_key = &raw_key[16..32];
+    let signing_key = &raw_key[..]; // Full 32 bytes for HMAC (matches Python)
+    let encryption_key = &raw_key[16..32]; // Last 16 bytes for AES
 
     // Generate random IV.
     let mut iv = [0u8; 16];
-    getrandom(&mut iv)?;
+    secure_random(&mut iv)?;
 
     // Timestamp (seconds since epoch, big-endian).
     let timestamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
+        .context("system clock before UNIX epoch")?
         .as_secs();
 
     // Encrypt with AES-128-CBC + PKCS7 padding.
@@ -221,32 +223,11 @@ pub fn encrypt_value(plaintext: &str) -> Result<String> {
     Ok(URL_SAFE.encode(&signed))
 }
 
-/// Platform-independent secure random bytes.
-fn getrandom(buf: &mut [u8]) -> Result<()> {
-    // Use std's thread_rng approach via simple OS random.
-    #[cfg(windows)]
-    {
-        // On Windows, read from the OS RNG.
-        for b in buf.iter_mut() {
-            *b = (std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .subsec_nanos()
-                & 0xFF) as u8;
-            // Spin briefly for entropy.
-            std::hint::spin_loop();
-        }
-        // Better: use BCryptGenRandom, but for now this works for non-security-critical IVs.
-        // The security of the config encryption relies on the Fernet key, not IV randomness.
-        Ok(())
-    }
-    #[cfg(not(windows))]
-    {
-        use std::io::Read;
-        let mut f = std::fs::File::open("/dev/urandom").context("open /dev/urandom")?;
-        f.read_exact(buf).context("read /dev/urandom")?;
-        Ok(())
-    }
+/// Cryptographically secure random bytes via OS CSPRNG.
+///
+/// Uses BCryptGenRandom on Windows, /dev/urandom on Unix.
+fn secure_random(buf: &mut [u8]) -> Result<()> {
+    getrandom::fill(buf).map_err(|e| anyhow::anyhow!("CSPRNG failed: {e}"))
 }
 
 /// Resolve the config.json path.

@@ -24,17 +24,19 @@ Usage in assistant_loop.py:
     detected = bridge.wait_for_wake_word()
 
 Wire protocol: 4-byte big-endian length + MessagePack payload.
-Message format: {"type": "<MessageType>", "payload": {...}}
+Message format (externally tagged enum):
+  Unit variants:   "Ping", "Pong", "Shutdown", "WakeWordDetected"
+  Tuple variants:  {"Speak": {"text": "..."}}
 """
 
 import socket
 import struct
 import logging
+import threading
 
 try:
     import msgpack
 except ImportError:
-    # Fallback: pip install msgpack
     raise ImportError("msgpack is required: pip install msgpack")
 
 logger = logging.getLogger("gclaw_bridge")
@@ -47,11 +49,28 @@ TOOLS_TCP_PORT = 19821
 MAX_MESSAGE_SIZE = 16 * 1024 * 1024
 
 
+def _get_msg_type(msg):
+    """Extract the message type from an externally tagged enum message.
+
+    Rust serde externally tagged format:
+      Unit variants: "Ping" (just a string)
+      Tuple variants: {"Speak": {"text": "..."}} (dict with one key)
+
+    Returns: (type_name, payload_or_None)
+    """
+    if isinstance(msg, str):
+        return msg, None
+    if isinstance(msg, dict) and len(msg) == 1:
+        key = next(iter(msg))
+        return key, msg[key]
+    return None, None
+
+
 class GclawVoiceBridge:
     """IPC bridge to the gclaw-voice Rust binary.
 
     Replaces speech.py function calls with IPC messages.
-    Thread-safe: uses a single socket with send/recv locks.
+    Thread-safe via send/recv locks.
     """
 
     def __init__(self, port=VOICE_TCP_PORT, host="127.0.0.1"):
@@ -59,6 +78,8 @@ class GclawVoiceBridge:
         self.port = port
         self._sock = None
         self._connected = False
+        self._send_lock = threading.Lock()
+        self._recv_lock = threading.Lock()
 
     def connect(self, timeout=10.0):
         """Connect to the gclaw-voice IPC server."""
@@ -72,7 +93,7 @@ class GclawVoiceBridge:
         """Disconnect from gclaw-voice."""
         if self._sock:
             try:
-                self._send_message({"type": "Shutdown"})
+                self._send_message("Shutdown")
             except Exception:
                 pass
             self._sock.close()
@@ -88,25 +109,27 @@ class GclawVoiceBridge:
     # ----------------------------------------------------------------
 
     def _send_message(self, msg):
-        """Send a length-prefixed MessagePack message."""
-        payload = msgpack.packb(msg, use_bin_type=True)
-        length = len(payload)
-        if length > MAX_MESSAGE_SIZE:
-            raise ValueError(f"message too large: {length} bytes")
-        header = struct.pack(">I", length)
-        self._sock.sendall(header + payload)
+        """Send a length-prefixed MessagePack message (thread-safe)."""
+        with self._send_lock:
+            payload = msgpack.packb(msg, use_bin_type=True)
+            length = len(payload)
+            if length > MAX_MESSAGE_SIZE:
+                raise ValueError(f"message too large: {length} bytes")
+            header = struct.pack(">I", length)
+            self._sock.sendall(header + payload)
 
     def _recv_message(self):
-        """Receive a length-prefixed MessagePack message."""
-        header = self._recv_exact(4)
-        length = struct.unpack(">I", header)[0]
-        if length > MAX_MESSAGE_SIZE:
-            raise ValueError(f"frame too large: {length} bytes")
-        payload = self._recv_exact(length)
-        return msgpack.unpackb(payload, raw=False)
+        """Receive a length-prefixed MessagePack message (thread-safe)."""
+        with self._recv_lock:
+            header = self._recv_exact(4)
+            length = struct.unpack(">I", header)[0]
+            if length > MAX_MESSAGE_SIZE:
+                raise ValueError(f"frame too large: {length} bytes")
+            payload = self._recv_exact(length)
+            return msgpack.unpackb(payload, raw=False)
 
     def _recv_exact(self, n):
-        """Read exactly n bytes from socket."""
+        """Read exactly n bytes from socket. Must be called under _recv_lock."""
         data = bytearray()
         while len(data) < n:
             chunk = self._sock.recv(n - len(data))
@@ -130,12 +153,11 @@ class GclawVoiceBridge:
         try:
             while True:
                 msg = self._recv_message()
-                msg_type = msg.get("type")
+                msg_type, payload = _get_msg_type(msg)
                 if msg_type == "WakeWordDetected":
                     return True
                 elif msg_type == "Ping":
-                    self._send_message({"type": "Pong"})
-                # Ignore other messages while waiting for wake word
+                    self._send_message("Pong")
         except socket.timeout:
             return False
         finally:
@@ -152,19 +174,17 @@ class GclawVoiceBridge:
         try:
             while True:
                 msg = self._recv_message()
-                msg_type = msg.get("type")
-                if msg_type == "UserSpeech":
-                    payload = msg.get("payload", {})
+                msg_type, payload = _get_msg_type(msg)
+                if msg_type == "UserSpeech" and payload:
                     return (
                         payload.get("text", ""),
                         payload.get("language", "en"),
                         payload.get("confidence", 0.0),
                     )
-                elif msg_type == "BargeIn":
-                    payload = msg.get("payload", {})
+                elif msg_type == "BargeIn" and payload:
                     return (payload.get("text", ""), "en", 1.0)
                 elif msg_type == "Ping":
-                    self._send_message({"type": "Pong"})
+                    self._send_message("Pong")
         except socket.timeout:
             return (None, None, None)
         finally:
@@ -175,10 +195,7 @@ class GclawVoiceBridge:
 
         Mirrors: speech.speak()
         """
-        self._send_message({
-            "type": "Speak",
-            "payload": {"text": text}
-        })
+        self._send_message({"Speak": {"text": text}})
 
     def speak_interruptible(self, text):
         """Speak with barge-in support.
@@ -186,24 +203,17 @@ class GclawVoiceBridge:
         Mirrors: speech.speak_interruptible()
         Returns: None if completed, or the user's interruption text.
         """
-        self._send_message({
-            "type": "SpeakInterruptible",
-            "payload": {"text": text}
-        })
-        # Wait for either completion (no message) or BargeIn message.
-        # The Rust side sends a BargeIn message if the user interrupts.
+        self._send_message({"SpeakInterruptible": {"text": text}})
         self._sock.settimeout(120)  # Max TTS duration
         try:
             while True:
                 msg = self._recv_message()
-                msg_type = msg.get("type")
-                if msg_type == "BargeIn":
-                    payload = msg.get("payload", {})
+                msg_type, payload = _get_msg_type(msg)
+                if msg_type == "BargeIn" and payload:
                     return payload.get("text")
                 elif msg_type == "Ping":
-                    self._send_message({"type": "Pong"})
+                    self._send_message("Pong")
                 else:
-                    # Any other message means speech completed
                     return None
         except socket.timeout:
             return None
@@ -215,7 +225,7 @@ class GclawVoiceBridge:
 
         Mirrors: speech.stop_speaking()
         """
-        self._send_message({"type": "StopSpeaking"})
+        self._send_message("StopSpeaking")
 
     def set_mic_state(self, state):
         """Set microphone state.
@@ -223,30 +233,25 @@ class GclawVoiceBridge:
         Args:
             state: "IDLE", "LISTENING", "PROCESSING", or "SPEAKING"
         """
-        self._send_message({
-            "type": "SetMicState",
-            "payload": {"state": state}
-        })
+        self._send_message({"SetMicState": {"state": state}})
 
     def configure(self, stt_engine=None, language=None, ai_name=None):
         """Reconfigure the voice shell.
 
         Mirrors: speech.set_stt_engine(), speech.set_language()
         """
-        self._send_message({
-            "type": "Configure",
-            "payload": {
-                "stt_engine": stt_engine,
-                "language": language,
-                "ai_name": ai_name,
-            }
-        })
+        self._send_message({"Configure": {
+            "stt_engine": stt_engine,
+            "language": language,
+            "ai_name": ai_name,
+        }})
 
     def ping(self):
         """Health check."""
-        self._send_message({"type": "Ping"})
+        self._send_message("Ping")
         msg = self._recv_message()
-        return msg.get("type") == "Pong"
+        msg_type, _ = _get_msg_type(msg)
+        return msg_type == "Pong"
 
     def __enter__(self):
         self.connect()

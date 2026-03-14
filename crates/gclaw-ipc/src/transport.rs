@@ -4,7 +4,7 @@
 use anyhow::{Context, Result};
 use bytes::BytesMut;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tracing::{debug, error};
+use tracing::debug;
 
 use crate::codec::Codec;
 use crate::protocol::Message;
@@ -70,10 +70,12 @@ where
             if n == 0 {
                 // EOF — peer disconnected.
                 if self.read_buf.is_empty() {
-                    return Ok(None);
+                    return Ok(None); // Clean disconnect.
                 }
-                error!("ipc: EOF with {} bytes remaining in buffer", self.read_buf.len());
-                return Ok(None);
+                // Partial message in buffer — this is an error, not clean EOF.
+                let remaining = self.read_buf.len();
+                self.read_buf.clear();
+                anyhow::bail!("peer disconnected with {remaining} bytes of incomplete message");
             }
             self.read_buf.extend_from_slice(&tmp[..n]);
         }
