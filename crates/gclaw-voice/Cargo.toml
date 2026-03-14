@@ -30,7 +30,7 @@ cpal = "0.15"
 
 # VAD (Silero via ONNX Runtime) — requires "full" feature
 ort = { version = "2.0.0-rc.12", features = ["load-dynamic"], optional = true }
-ndarray = { version = "0.16", optional = true }
+ndarray = { version = "0.17", optional = true }
 
 # STT (whisper.cpp bindings) — requires "full" feature + LLVM/libclang
 whisper-rs = { version = "0.13", optional = true }
