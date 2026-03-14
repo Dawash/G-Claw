@@ -360,6 +360,59 @@ mod tests {
     }
 
     #[test]
+    fn encrypt_decrypt_empty_string() {
+        let encrypted = encrypt_value("").unwrap();
+        let decrypted = decrypt_value(&encrypted).unwrap();
+        assert_eq!(decrypted, "");
+    }
+
+    #[test]
+    fn encrypt_decrypt_unicode() {
+        let plaintext = "sk-key-日本語-🔑-résumé";
+        let encrypted = encrypt_value(plaintext).unwrap();
+        let decrypted = decrypt_value(&encrypted).unwrap();
+        assert_eq!(decrypted, plaintext);
+    }
+
+    #[test]
+    fn encrypt_decrypt_long_key() {
+        let plaintext = "x".repeat(10_000);
+        let encrypted = encrypt_value(&plaintext).unwrap();
+        let decrypted = decrypt_value(&encrypted).unwrap();
+        assert_eq!(decrypted, plaintext);
+    }
+
+    #[test]
+    fn encrypt_produces_different_tokens() {
+        // Each encryption should use a different random IV.
+        let e1 = encrypt_value("same").unwrap();
+        let e2 = encrypt_value("same").unwrap();
+        assert_ne!(e1, e2, "same plaintext should produce different tokens (random IV)");
+        // Both should decrypt to the same value.
+        assert_eq!(decrypt_value(&e1).unwrap(), "same");
+        assert_eq!(decrypt_value(&e2).unwrap(), "same");
+    }
+
+    #[test]
+    fn decrypt_rejects_garbage() {
+        assert!(decrypt_value("not-a-fernet-token").is_err());
+        assert!(decrypt_value("").is_err());
+        assert!(decrypt_value("gAAAAA").is_err());
+    }
+
+    #[test]
+    fn decrypt_rejects_tampered_token() {
+        let encrypted = encrypt_value("secret").unwrap();
+        // Decode base64, tamper the ciphertext, re-encode.
+        let mut token_bytes = URL_SAFE.decode(&encrypted).unwrap();
+        if token_bytes.len() > 30 {
+            token_bytes[30] ^= 0xFF; // Flip a byte in the ciphertext.
+        }
+        let tampered = URL_SAFE.encode(&token_bytes);
+        assert!(decrypt_value(&tampered).is_err());
+    }
+
+    #[test]
     fn parse_minimal_config() {
         let json = r#"{
             "username": "Denis",
@@ -377,5 +430,51 @@ mod tests {
         assert_eq!(config.ai_name, "G");
         assert_eq!(config.provider, "ollama");
         assert_eq!(config.ollama_url, "http://localhost:11434");
+    }
+
+    #[test]
+    fn parse_config_with_providers() {
+        let json = r#"{
+            "username": "User",
+            "ai_name": "Jarvis",
+            "provider": "openai",
+            "api_key": "sk-123",
+            "providers": {
+                "openai": {"api_key": "sk-openai", "model": "gpt-4o"},
+                "anthropic": {"api_key": "sk-ant", "model": "claude-sonnet-4-20250514"}
+            }
+        }"#;
+        let config: GclawConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.providers.len(), 2);
+        assert_eq!(config.providers["openai"].model.as_deref(), Some("gpt-4o"));
+    }
+
+    #[test]
+    fn config_defaults_applied() {
+        let json = r#"{
+            "username": "U",
+            "ai_name": "A",
+            "provider": "ollama"
+        }"#;
+        let config: GclawConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.language, "auto");
+        assert_eq!(config.stt_engine, "whisper");
+        assert_eq!(config.ollama_url, "http://localhost:11434");
+        assert!(!config.first_run_done);
+        assert!(!config.web_remote);
+        assert!(config.tool_timeouts.is_empty());
+    }
+
+    #[test]
+    fn config_with_tool_timeouts() {
+        let json = r#"{
+            "username": "U",
+            "ai_name": "A",
+            "provider": "ollama",
+            "tool_timeouts": {"run_terminal": 60, "web_read": 30}
+        }"#;
+        let config: GclawConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.tool_timeouts["run_terminal"], 60);
+        assert_eq!(config.tool_timeouts["web_read"], 30);
     }
 }

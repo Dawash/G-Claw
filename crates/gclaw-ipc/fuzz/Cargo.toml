@@ -1,0 +1,18 @@
+[package]
+name = "gclaw-ipc-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+gclaw-ipc = { path = ".." }
+bytes = "1"
+
+[[bin]]
+name = "fuzz_codec"
+path = "fuzz_targets/fuzz_codec.rs"
+doc = false

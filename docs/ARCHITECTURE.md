@@ -37,6 +37,126 @@ The migration is **incremental**: native components replace Python subsystems on
 └─────────────────────────────────────────────────────────────────┘
 ```
 
+### Component Diagram (Mermaid)
+
+```mermaid
+graph TB
+    subgraph VoiceShell["Rust Voice Shell (gclaw-voice)"]
+        Audio["cpal Audio I/O"]
+        VAD["Silero VAD"]
+        STT["whisper.cpp STT"]
+        TTS["Piper TTS / espeak-ng"]
+        Wake["Wake Word Detector"]
+        BargeIn["Barge-in Controller"]
+        StateMachine["IDLE/ACTIVE State Machine"]
+    end
+
+    subgraph Brain["Python Brain (existing G)"]
+        BrainPy["brain.py"]
+        LLM["llm/ adapters"]
+        Orchestration["orchestration/"]
+        Agents["agents/"]
+        Tier1Tools["Tier 1+ tools"]
+    end
+
+    subgraph ToolRuntime["Go Tool Runtime (gclaw-tools, Phase 2)"]
+        Tier0["Tier 0 tools"]
+        Schema["JSON Schema contracts"]
+    end
+
+    subgraph FutureBrain["Rust Brain + Agents (Phase 3-4)"]
+        RustBrain["gclaw-brain"]
+        RustAgents["gclaw-agents"]
+    end
+
+    subgraph Platform["Platform Trait Layer (Phase 5)"]
+        Win["Windows"]
+        Linux["Linux"]
+        Mac["macOS"]
+        Android["Android"]
+    end
+
+    VoiceShell -- "IPC (msgpack/TCP)" --> Brain
+    Brain -- "IPC (msgpack/TCP)" --> VoiceShell
+    Brain -- "IPC" --> ToolRuntime
+    ToolRuntime -- "IPC" --> Brain
+    Brain -.->|"Phases 3-4 replace"| FutureBrain
+    FutureBrain -- "IPC" --> ToolRuntime
+    VoiceShell --> Platform
+    FutureBrain --> Platform
+```
+
+### IPC Message Flow (Mermaid)
+
+```mermaid
+sequenceDiagram
+    participant Mic as Microphone
+    participant VS as Voice Shell
+    participant B as Python Brain
+    participant TTS as TTS Engine
+    participant Spk as Speaker
+
+    Note over VS: IDLE state — listening for wake word
+    Mic->>VS: Audio stream
+    VS->>VS: Wake word detected ("Hey G")
+    VS->>B: WakeWordDetected
+    Note over VS: ACTIVE state — recording speech
+
+    Mic->>VS: Audio stream
+    VS->>VS: VAD detects speech end
+    VS->>VS: whisper.cpp transcribes
+    VS->>B: UserSpeech {text, language, confidence}
+
+    B->>B: LLM processes query
+    B->>VS: Speak {text}
+    VS->>TTS: Synthesize speech
+    TTS->>Spk: Audio output
+
+    alt Barge-in detected
+        Mic->>VS: User speaks during playback
+        VS->>VS: VAD detects barge-in
+        VS->>Spk: Stop playback
+        VS->>B: BargeIn {text}
+        B->>B: LLM processes interruption
+        B->>VS: Speak {text}
+    end
+
+    B->>VS: SetMicState {state: IDLE}
+    Note over VS: Return to IDLE
+```
+
+### Phase 1 Data Flow (Mermaid)
+
+```mermaid
+flowchart LR
+    Mic["Microphone\n(cpal input)"]
+    RB["Ring Buffer\n(16kHz PCM)"]
+    VAD["Silero VAD\n(ONNX Runtime)"]
+    STT["whisper.cpp\nSTT"]
+    IPC["IPC Transport\n(msgpack/TCP)"]
+    Brain["Python Brain\n(brain.py)"]
+    TTS["Piper TTS\n/ espeak-ng"]
+    Spk["Speaker\n(cpal output)"]
+
+    Mic -->|"audio frames"| RB
+    RB -->|"chunks"| VAD
+    VAD -->|"speech segment"| STT
+    STT -->|"UserSpeech {text}"| IPC
+    IPC -->|"msgpack frame"| Brain
+    Brain -->|"Speak {text}"| IPC
+    IPC -->|"text payload"| TTS
+    TTS -->|"PCM audio"| Spk
+
+    style Mic fill:#4a9eff,color:#fff
+    style RB fill:#6b7280,color:#fff
+    style VAD fill:#f59e0b,color:#fff
+    style STT fill:#10b981,color:#fff
+    style IPC fill:#8b5cf6,color:#fff
+    style Brain fill:#ef4444,color:#fff
+    style TTS fill:#10b981,color:#fff
+    style Spk fill:#4a9eff,color:#fff
+```
+
 ## Crate Structure
 
 ```

@@ -14,32 +14,85 @@ Built with **Rust** (voice shell, brain, agents) and **Go** (tool runtime). Runs
 | `gclaw-config` | Config loader with Fernet decryption (pure Rust) | ✅ Complete |
 | `gclaw-voice` | Audio capture, VAD, STT, TTS, wake word, barge-in | ✅ Core complete |
 
-## Quick Start
+## Getting Started
+
+### Prerequisites Checklist
+
+Before building G-Claw, make sure you have the following installed:
+
+- [ ] **Rust toolchain** (1.85+) -- install via [rustup](https://rustup.rs/) or run `rustup update stable`
+- [ ] **Git** -- to clone the repository
+- [ ] **C compiler** -- MSVC (Windows), gcc (Linux), or Xcode CLI tools (macOS)
+- [ ] **LLVM/libclang** (only for `--features full`, needed by whisper-rs bindgen):
+  - Windows: Download from [LLVM releases](https://releases.llvm.org/), set `LIBCLANG_PATH` env var
+  - Linux: `sudo apt install libclang-dev`
+  - macOS: `brew install llvm`
+- [ ] **Model files** (see download commands below)
+- [ ] **TTS engine** (optional):
+  - [Piper](https://github.com/rhasspy/piper) binary + voice model (recommended)
+  - [espeak-ng](https://github.com/espeak-ng/espeak-ng) (fallback)
+
+### Download Models
+
+Create the `models/` directory and download the required model files:
 
 ```bash
-# Check (no native deps required)
+mkdir -p models
+
+# Silero VAD model (voice activity detection)
+curl -L -o models/silero_vad.onnx \
+  https://github.com/snakers4/silero-vad/raw/master/src/silero_vad/data/silero_vad.onnx
+
+# Whisper.cpp STT model (speech-to-text, ~150 MB)
+curl -L -o models/ggml-base.bin \
+  https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin
+```
+
+> **Tip:** For faster inference on constrained devices (RPi, Android), use `ggml-tiny.bin` instead (~75 MB).
+
+### Quick Start
+
+```bash
+# Verify the toolchain compiles everything (no native deps required)
 cargo check
 
-# Run tests
+# Run the test suite
 cargo test
 
-# Build with full pipeline (requires LLVM/libclang for whisper-rs)
+# Build with the full voice pipeline (requires LLVM/libclang)
 cargo build --release --features full
 ```
 
-### Prerequisites for Full Build
+### Quick Demo -- IPC Round-Trip
 
-1. **Rust** (1.85+): `rustup update stable`
-2. **LLVM/libclang** (for whisper-rs bindgen):
-   - Windows: Download from [LLVM releases](https://releases.llvm.org/), set `LIBCLANG_PATH`
-   - Linux: `sudo apt install libclang-dev`
-   - macOS: `brew install llvm`
-3. **Model files** (download separately):
-   - `models/silero_vad.onnx` — [Silero VAD](https://github.com/snakers4/silero-vad)
-   - `models/ggml-base.bin` — [Whisper.cpp models](https://huggingface.co/ggerganov/whisper.cpp)
-4. **TTS** (optional):
-   - [Piper](https://github.com/rhasspy/piper) binary + voice model
-   - [espeak-ng](https://github.com/espeak-ng/espeak-ng) (fallback)
+Run the built-in IPC demo to verify that the message codec and transport work end-to-end:
+
+```bash
+cargo run --example ipc_demo -p gclaw-voice
+```
+
+This starts a local IPC server and client, sends a `UserSpeech` message, and prints the decoded round-trip result.
+
+### First Voice Test
+
+Once you have model files downloaded and a full build ready:
+
+1. **Start the voice shell** (listens on port 19820 by default):
+   ```bash
+   cargo run --release --features full -p gclaw-voice
+   ```
+
+2. **Connect the Python brain** (from the G project root):
+   ```python
+   from gclaw_bridge import GclawVoiceBridge
+   bridge = GclawVoiceBridge(port=19820)
+   bridge.connect()
+   text, lang, conf = bridge.wait_for_speech()
+   print(f"You said: {text} (confidence: {conf})")
+   bridge.speak("Hello from G-Claw!")
+   ```
+
+3. **Say the wake word** ("Hey G" by default), then speak your query. The voice shell transcribes your speech, sends it to the brain over IPC, and plays back the response through TTS.
 
 ## Architecture
 
